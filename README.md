@@ -4,7 +4,7 @@
 
 **Contact:** xuyuan2@zufe.edu.cn
 
-This repository holds the analysis code and the frozen derived tables that regenerate every number, table and figure in the manuscript. code/ is the numbered analysis scripts as run; data/ holds the frozen inputs they read (per-city-day urban and rural summaries from MOD11A1, the city-year decomposition, the sensitivity outputs, and the city covariates); nvironment.txt is the `pip freeze` of the interpreter that produced the reported numbers; MANIFEST.sha256 lists the SHA-256 digest of every file so a reader can verify their copy.
+This repository holds the analysis code and the frozen derived tables that regenerate every number, table and figure in the manuscript. code/ is the numbered analysis scripts as run; data/ holds the frozen inputs they read (per-city-day urban and rural summaries from MOD11A1, the city-year decomposition, the sensitivity outputs, and the city covariates); environment.txt is the `pip freeze` of the interpreter that produced the reported numbers; MANIFEST.sha256 lists the SHA-256 digest of every file so a reader can verify their copy.
 
 **License:** Creative Commons Attribution 4.0 International (CC BY 4.0) - see LICENSE. Please cite the manuscript when reusing this material.
 
