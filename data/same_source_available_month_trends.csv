@@ -1,0 +1,15 @@
+mode,metric,eligible_years,Sen_K_per_decade,CI95_lo,CI95_hi,Kendall_tau,Kendall_p,note
+night,A_paired_daily_common_months_mean_K,25,0.1491333284418822,0.02625187374223855,0.2572695784646961,0.35999999999999993,0.011371729355231645,secondary: >=6 shared estimable months; city and month composition varies
+night,B_independent_dates_common_months_mean_K,25,0.1743417372443989,0.05293815462400406,0.2781982858903721,0.39333333333333326,0.005412547327037236,secondary: >=6 shared estimable months; city and month composition varies
+night,C_daily_rebuilt_8day_common_months_mean_K,25,0.15735887923377911,0.0471478198150287,0.2722001012003938,0.34666666666666657,0.015016297415695348,secondary: >=6 shared estimable months; city and month composition varies
+night,D_native_MOD11A2_common_months_mean_K,25,0.21475102183682634,0.09712838538021096,0.3314341287784053,0.4599999999999999,0.0009829823600505953,secondary: >=6 shared estimable months; city and month composition varies
+night,delta_A_to_B,25,-0.03718952499031877,-0.10618064684421497,0.022892878091163065,-0.19999999999999996,0.16991295403230983,secondary: >=6 shared estimable months; city and month composition varies
+night,delta_B_to_C,25,0.04183656497245371,-0.030117066715818486,0.10437900518667534,0.1933333333333333,0.18505827477804032,secondary: >=6 shared estimable months; city and month composition varies
+night,delta_C_to_D,25,-0.07818443811726335,-0.1041959626533101,-0.03728121222281073,-0.5199999999999999,0.00015880897857935695,secondary: >=6 shared estimable months; city and month composition varies
+day,A_paired_daily_common_months_mean_K,25,-0.1365792188994849,-0.23342838581658237,-0.03166061227093983,-0.3866666666666666,0.00631402755690959,secondary: >=6 shared estimable months; city and month composition varies
+day,B_independent_dates_common_months_mean_K,25,-0.15711166058573373,-0.3075419621459796,-0.0453690018017161,-0.3666666666666666,0.009856596254745291,secondary: >=6 shared estimable months; city and month composition varies
+day,C_daily_rebuilt_8day_common_months_mean_K,25,-0.05165147857105798,-0.16270790401597673,0.04176925689999411,-0.15999999999999995,0.27546798247377474,secondary: >=6 shared estimable months; city and month composition varies
+day,D_native_MOD11A2_common_months_mean_K,25,-0.053738184093631916,-0.1614541178985734,0.04178333939120993,-0.15999999999999995,0.27546798247377474,secondary: >=6 shared estimable months; city and month composition varies
+day,delta_A_to_B,25,0.03446501359625608,-0.009886420290384224,0.09456221271033134,0.22666666666666663,0.11834341824544657,secondary: >=6 shared estimable months; city and month composition varies
+day,delta_B_to_C,25,-0.134787544984038,-0.20482318878234634,-0.07241042443470597,-0.5533333333333332,5.032943598554465e-05,secondary: >=6 shared estimable months; city and month composition varies
+day,delta_C_to_D,25,-3.555520925104807e-05,-6.894968977586789e-05,2.668469581074735e-07,-0.2799999999999999,0.05185823522532831,secondary: >=6 shared estimable months; city and month composition varies
