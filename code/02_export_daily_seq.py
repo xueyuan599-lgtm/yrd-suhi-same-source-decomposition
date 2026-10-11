@@ -53,6 +53,10 @@ import ee
 
 sys.stdout.reconfigure(encoding="utf-8")
 
+# 平台映射的唯一源在 `analysis/code/products.py`（本脚本在 daily/ 下，故先补路径）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import products  # noqa: E402
+
 PROJECT = "evident-ocean-510002-t0"
 ee.Initialize(project=PROJECT)
 
@@ -60,6 +64,9 @@ parser = argparse.ArgumentParser(description="逐日 MOD11A1 LST 序列导出")
 parser.add_argument("--mode", choices=("night", "day"), default="night")
 parser.add_argument("--dry-run", action="store_true", help="只预检，不提交")
 parser.add_argument("--years", type=int, nargs="+", default=[2020, 2023])
+parser.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="terra=MOD11A1（默认，既有行为不变）；aqua=MYD11A1 第二平台复现。"
+                         "同时决定集合、输出名前缀与清单文件名——见 PRODUCTS 字典。")
 # 带上原始 QC 波段：任务数不变，但本地可复算**任何** QC 档位（含收严）。
 # 代价是每景多一条 int16 波段 → 数据量与耗时可能近翻倍，故先用 A/B 探针实测。
 parser.add_argument("--with-qc", action="store_true",
@@ -75,9 +82,12 @@ QC_BAND = "QC_Night" if MODE == "night" else "QC_Day"
 LST_BAND = "LST_Night_1km" if MODE == "night" else "LST_Day_1km"
 LABEL = "夜间" if MODE == "night" else "白天"
 
+PROD = products.get(ARGS.product)
+COLLECTION = PROD["collection_daily"]
+STEM = PROD["stem_daily"].format(tag=TAG)
+
 SCALE = 1000
 FOLDER = "GEE_uhi_export"
-TRACK = f"02_export_tasks_{TAG}.json"   # 探针版本在下方按 SUF 改名
 FILL = -9999
 # 半年一段：波段数与任务重量都减半。
 # ⚠ `filterDate` 的**结束日是排他的**。原先写 `("01-01","06-30")` / `("07-01","12-31")`
@@ -98,9 +108,10 @@ with open(BASE / "code" / "07_city_keys.json", encoding="utf-8") as f:
 
 # 探针（--prefix）走独立清单与独立任务表，不污染主流程的 glob 与监视器
 SUF = "_probe" if ARGS.prefix else ""
+TRACK = PROD["track_daily"].format(tag=TAG)    # 探针版本在下方按 SUF 改名
 if SUF:
-    TRACK = f"02_export_tasks_{TAG}{SUF}.json"
-MANIFEST = BASE / "data" / "daily" / f"daily_dates_{TAG}{SUF}.json"
+    TRACK = PROD["track_daily"].format(tag=f"{TAG}{SUF}")
+MANIFEST = BASE / "data" / "daily" / PROD["manifest"].format(tag=f"{TAG}{SUF}")
 MANIFEST.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -126,7 +137,7 @@ def daily_seq(year: int, start: str, end: str):
     ⚠ **必须 sort 后再取**：ImageCollection 默认顺序不保证是时间序，
     不排序会让波段与日期错位，而且**不会报错**——配对结果全错但不自知（16 脚本同款告诫）。
     """
-    col = (ee.ImageCollection("MODIS/061/MOD11A1")
+    col = (ee.ImageCollection(COLLECTION)
            .filterDate(start, end)
            .sort("system:time_start"))
 
@@ -157,8 +168,10 @@ def daily_seq(year: int, start: str, end: str):
 
 # ------------------------------------------------------------- 预检
 print("=" * 78)
-print(f"{LABEL}逐日 MOD11A1 序列导出预检   [mode={MODE}]")
+print(f"{LABEL}逐日 {PROD['label']} {PROD['label_daily']} 序列导出预检"
+      f"   [mode={MODE} · product={ARGS.product}]")
 print("=" * 78)
+print(f"  集合 {COLLECTION}  ·  输出前缀 {STEM}")
 print(f"  QC {QC_BAND} bitwiseAnd(3).lte(1)  ·  存原始 DN(int16)，本地 ×0.02 得 K")
 print(f"  年份 {len(ARGS.years)} 个：{ARGS.years[0]}–{ARGS.years[-1]}"
       f"  ·  分 {len(HALVES)} 段/年 → {len(ARGS.years) * len(HALVES)} 个任务")
@@ -181,7 +194,8 @@ for y in ARGS.years:
           + ("" if n_year == expect else "   ⚠ 缺日"))
 
 # 跨昼夜对照：同一年必须落在同一批日期上（日期逻辑若与另一模式有分毫差异，配对会全错）
-other = BASE / "data" / "daily" / f"daily_dates_{'day' if MODE == 'night' else 'night'}.json"
+other = BASE / "data" / "daily" / PROD["manifest"].format(
+    tag="day" if MODE == "night" else "night")
 if other.exists():
     prev = json.loads(other.read_text(encoding="utf-8"))
     # ⚠ JSON 的键**只能是字符串**，而 alldates 的键是 (年, 半段) 元组。
@@ -221,7 +235,7 @@ tasks = {}
 for (y, half), img in built.items():
     # --prefix 只给基名，仍按 年_半段 区分，否则两半会互相覆盖
     name = (f"{ARGS.prefix}_{y}_{half}" if ARGS.prefix
-            else f"uhi_{TAG}daily_{y}_{half}")
+            else f"{STEM}_{y}_{half}")
     task = ee.batch.Export.image.toDrive(
         image=img,
         description=name,

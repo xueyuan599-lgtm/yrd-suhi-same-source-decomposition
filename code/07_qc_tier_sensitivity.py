@@ -53,11 +53,19 @@ parser.add_argument("--tag", default=None,
                          "没有它时两者写同一路径：探针结果（如 2020 夜间那批）会被"
                          "全量运行静默冲掉，正文与状态记录引用的数字就失去出处。"
                          "默认：给了 `--glob` 时为 `_glob`，否则无后缀。")
+parser.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="terra=MOD11A1（默认，行为不变）；aqua=MYD11A1，读 mya_* 且输出加 _aqua")
 ARGS = parser.parse_args()
 MODE, TAG = ARGS.mode, ARGS.mode
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from products import get as get_product  # noqa: E402
+
+PROD = get_product(ARGS.product)
+SUF = PROD["suffix"]
+STEM = PROD["stem_daily"].format(tag=TAG)
 # 输出后缀。**不能复用 `TAG`**——那是模式名，用于拼 `uhi_{TAG}daily_...`。
 # 统一补前导下划线，使 `--tag x` 与自动的 `_glob` 命名风格一致。
-OSUF = ("_" + ARGS.tag.lstrip("_")) if ARGS.tag else ("_glob" if ARGS.glob else "")
+OSUF = (("_" + ARGS.tag.lstrip("_")) if ARGS.tag else ("_glob" if ARGS.glob else "")) + SUF
 LABEL = "夜间" if MODE == "night" else "白天"
 
 FILL = -9999
@@ -96,7 +104,7 @@ def files_for(year):
     """该年份要读哪些文件。`--glob` 时全部文件都算给该年份（探针文件不含年份）。"""
     if ARGS.glob:
         return sorted(EXPORT.glob(ARGS.glob))
-    return sorted(EXPORT.glob(f"uhi_{TAG}daily_{year}_*.tif"))
+    return sorted(EXPORT.glob(f"{STEM}_{year}_*.tif"))
 
 
 def load_pairs(year):

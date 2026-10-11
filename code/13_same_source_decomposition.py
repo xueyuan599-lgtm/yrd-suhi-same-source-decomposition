@@ -23,6 +23,25 @@ OUT = BASE / "outputs" / "daily"
 FILL = -9999
 PIXEL_RULES = {"any": (1, 0.0), "20px": (20, 0.0), "40pct": (10, .40), "60pct": (10, .60)}
 
+# 平台映射的唯一源（2026-10-11 加）：Aqua 复现只换集合与命名，估计量定义逐字不动。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from products import get as get_product  # noqa: E402
+
+PRODUCT = "terra"
+SUF = ""
+
+# 只有 Aqua 产物加 `product` 列：Terra 的冻结 CSV 不入这一列，故 Terra 重跑仍**逐字节可复现**
+# （该列是 2026-10-11 为消除「Aqua 文件里写着 MOD11A2」的误导标签而加的）。
+PRODUCT_COL: dict = {}
+
+
+def stem_daily(mode: str) -> str:
+    return get_product(PRODUCT)["stem_daily"].format(tag=mode)
+
+
+def stem_8day(mode: str) -> str:
+    return get_product(PRODUCT)["stem_8day"].format(tag=mode)
+
 
 def get_masks(year, basis, masks):
     mask_year = year if basis == "dynamic" else 2020
@@ -67,9 +86,9 @@ def threshold(n, mask_n, rule):
 def daily_zone_rows(mode, year, mask_sets):
     """Read each source raster once, then aggregate under the requested dynamic/fixed masks."""
     rows, c_sums, c_counts = [], {}, {}
-    ref_path = EXPORT / f"uhi_{mode}daily_{year}_h1.tif"
+    ref_path = EXPORT / f"{stem_daily(mode)}_{year}_h1.tif"
     with rasterio.open(ref_path) as ref:
-        comp_path = EXPORT / f"uhi_{mode}seq_{year}.tif"
+        comp_path = EXPORT / f"{stem_8day(mode)}_{year}.tif"
         with open_checked(comp_path, ref) as comp:
             comp_dates = [pd.to_datetime(d[1:]) for d in comp.descriptions]
             jan1 = pd.Timestamp(year, 1, 1)
@@ -81,7 +100,7 @@ def daily_zone_rows(mode, year, mask_sets):
             c_counts = {d: np.zeros((ref.height, ref.width), np.uint8) for d in comp_dates}
             native = comp.read()  # Native MOD11A2 raw DN; zone_stats applies the 0.02 K scale.
             for half in ("h1", "h2"):
-                p = EXPORT / f"uhi_{mode}daily_{year}_{half}.tif"
+                p = EXPORT / f"{stem_daily(mode)}_{year}_{half}.tif"
                 with open_checked(p, ref) as daily:
                     data = daily.read()
                     for i, desc in enumerate(daily.descriptions):
@@ -98,7 +117,7 @@ def daily_zone_rows(mode, year, mask_sets):
                         for basis, masks in mask_sets.items():
                             for cid, v in zone_stats(a, masks).items():
                                 rows.append({"basis":basis,"year":year,"mode":mode,"city_id":cid,
-                                             "date":date,**v})
+                                             "date":date,**PRODUCT_COL,**v})
             comp_rows = []
             for j, start in enumerate(comp_dates):
                 cnt = c_counts[start]
@@ -109,7 +128,8 @@ def daily_zone_rows(mode, year, mask_sets):
                     c_stats, d_stats = zone_stats(c_arr, masks), zone_stats(native[j], masks)
                     for cid in set(c_stats) & set(d_stats):
                         comp_rows.append({"basis":basis,"year":year,"mode":mode,"city_id":cid,
-                                          "date":start,**{"c_"+k:v for k,v in c_stats[cid].items()},
+                                          "date":start,**PRODUCT_COL,
+                                          **{"c_"+k:v for k,v in c_stats[cid].items()},
                                           **{"d_"+k:v for k,v in d_stats[cid].items()}})
     return pd.DataFrame(rows), pd.DataFrame(comp_rows)
 
@@ -208,17 +228,23 @@ def trend_rows(annual):
     return pd.DataFrame(out)
 
 def main():
+    global PRODUCT, SUF, PRODUCT_COL
     ap=argparse.ArgumentParser()
     ap.add_argument("--years",nargs="+",type=int,default=[2020,2023])
     ap.add_argument("--modes",nargs="+",choices=["night","day"],default=["night","day"])
     ap.add_argument("--bases",nargs="+",choices=["dynamic","fixed2020"],default=["dynamic","fixed2020"])
     ap.add_argument("--min-days",nargs="+",type=int,default=[3,6,10])
     ap.add_argument("--min-comps",nargs="+",type=int,default=[1,2,3])
+    ap.add_argument("--product",choices=("terra","aqua"),default="terra",
+                    help="terra=MOD11A1/A2（默认，行为不变）；aqua=MYD11A1/A2，输出加 _aqua 后缀")
     args=ap.parse_args(); OUT.mkdir(parents=True,exist_ok=True)
+    PRODUCT = args.product
+    SUF = get_product(PRODUCT)["suffix"]
+    PRODUCT_COL = {} if PRODUCT == "terra" else {"product": PRODUCT}
     masks=np.load(DATA/"masks_matched.npz")
-    p_month=OUT/"same_source_decomposition_monthly.csv"
-    p_annual=OUT/"same_source_decomposition_city_year.csv"
-    p_comp=OUT/"same_source_decomposition_8day_city_period.csv"
+    p_month=OUT/f"same_source_decomposition_monthly{SUF}.csv"
+    p_annual=OUT/f"same_source_decomposition_city_year{SUF}.csv"
+    p_comp=OUT/f"same_source_decomposition_8day_city_period{SUF}.csv"
     first_month=first_annual=first_comp=True
     for mode in args.modes:
         for year in args.years:
@@ -248,7 +274,7 @@ def main():
         annual=pd.read_csv(p_annual)
         primary=annual[annual.basis.eq("dynamic")&annual.pixel_rule.eq("20px")&
                        annual.min_daily_days.eq(6)&annual.min_8day_periods.eq(2)]
-        trend_rows(primary).to_csv(OUT/"same_source_decomposition_trends.csv",index=False)
+        trend_rows(primary).to_csv(OUT/f"same_source_decomposition_trends{SUF}.csv",index=False)
     print(f"outputs: {p_month}, {p_annual}, {p_comp}",flush=True)
 if __name__=="__main__": main()
 

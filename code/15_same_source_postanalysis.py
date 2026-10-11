@@ -5,6 +5,8 @@ fixed-season sensitivities from the full city-month panels, restricting all
 methods to identical city-years/months where specified.
 """
 from pathlib import Path
+import argparse
+import sys
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr, theilslopes, kendalltau
@@ -12,6 +14,23 @@ from scipy.stats import spearmanr, theilslopes, kendalltau
 BASE = Path(__file__).resolve().parents[2]
 DATA = BASE / "data" / "daily"
 OUT = BASE / "outputs" / "daily"
+
+# 平台映射的唯一源（2026-10-11 加）。本脚本**不重估任何栅格值**，只做聚合与敏感性，
+# 故 Aqua 复现只需把输入/输出文件名整体加后缀，估计量定义逐字不动。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from products import get as get_product  # noqa: E402
+
+SUF = ""                       # terra 为空 → 文件名与既有产物逐字相同
+
+
+def fout(name: str) -> Path:
+    return OUT / (name if not SUF else name.replace(".csv", f"{SUF}.csv"))
+
+
+def fdata(name: str) -> Path:
+    return DATA / (name if not SUF else name.replace(".csv", f"{SUF}.csv"))
+
+
 ID = ["basis", "mode", "year", "city_id", "pixel_rule", "min_daily_days", "min_8day_periods"]
 METHODS = ["A_paired_daily_K", "B_independent_dates_K", "C_daily_rebuilt_8day_K", "D_native_MOD11A2_K"]
 PRIMARY = {"basis": "dynamic", "pixel_rule": "20px", "min_daily_days": 6, "min_8day_periods": 2}
@@ -30,8 +49,13 @@ def sen_summary(yearly, value):
 
 
 def main():
-    monthly = pd.read_csv(OUT / "same_source_decomposition_monthly.csv")
-    annual = pd.read_csv(OUT / "same_source_decomposition_city_year.csv")
+    global SUF
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="terra=MOD11A1/A2（默认，行为不变）；aqua=MYD11A1/A2，读写加 _aqua 后缀")
+    SUF = get_product(ap.parse_args().product)["suffix"]
+    monthly = pd.read_csv(fout("same_source_decomposition_monthly.csv"))
+    annual = pd.read_csv(fout("same_source_decomposition_city_year.csv"))
     primary_m = monthly.query("basis == @PRIMARY['basis'] and pixel_rule == @PRIMARY['pixel_rule'] and min_daily_days == @PRIMARY['min_daily_days'] and min_8day_periods == @PRIMARY['min_8day_periods']").copy()
     primary_a = annual.query("basis == @PRIMARY['basis'] and pixel_rule == @PRIMARY['pixel_rule'] and min_daily_days == @PRIMARY['min_daily_days'] and min_8day_periods == @PRIMARY['min_8day_periods']").copy()
 
@@ -40,7 +64,7 @@ def main():
     # daily urban/rural summaries; the 8-day period counts are carried monthly.
     raw_rows = []
     for mode in ["night", "day"]:
-        daily = pd.read_csv(DATA / f"daily_records_{mode}.csv")
+        daily = pd.read_csv(fdata(f"daily_records_{mode}.csv"))
         daily["year"] = daily.year.astype(int)
         daily["month"] = daily.month.astype(int)
         dm = primary_m[primary_m["mode"].eq(mode)]
@@ -72,7 +96,7 @@ def main():
                              "delta_C_equal_minus_raw_K": common.C_daily_rebuilt_8day_K.mean() - np.average(common.C_daily_rebuilt_8day_K, weights=common.C_n_periods),
                              "delta_D_equal_minus_raw_K": common.D_native_MOD11A2_K.mean() - np.average(common.D_native_MOD11A2_K, weights=common.D_n_periods)})
     raw = pd.DataFrame(raw_rows)
-    raw.to_csv(OUT / "same_source_aggregation_sensitivity_city_year.csv", index=False)
+    raw.to_csv(fout("same_source_aggregation_sensitivity_city_year.csv"), index=False)
     raw_year = raw.groupby(["mode", "year"], as_index=False).agg(
         city_years=("city_id", "nunique"), mean_months=("common_months", "mean"),
         A_equal=("A_month_equal_K", "mean"), A_raw=("A_pooled_days_K", "mean"),
@@ -81,7 +105,7 @@ def main():
         D_equal=("D_month_equal_K", "mean"), D_raw=("D_pooled_periods_K", "mean"),
         dA=("delta_A_equal_minus_raw_K", "mean"), dB=("delta_B_equal_minus_raw_K", "mean"),
         dC=("delta_C_equal_minus_raw_K", "mean"), dD=("delta_D_equal_minus_raw_K", "mean"))
-    raw_year.to_csv(OUT / "same_source_aggregation_sensitivity_year.csv", index=False)
+    raw_year.to_csv(fout("same_source_aggregation_sensitivity_year.csv"), index=False)
 
     # Three-month fixed-season panels; seasonal weights do not vary over years.
     season_rows = []
@@ -99,10 +123,10 @@ def main():
                                     "B_minus_C_K": vals[METHODS[1]] - vals[METHODS[2]],
                                     "C_minus_D_paired_K": g.C_minus_D_paired_K.mean()})
     season = pd.DataFrame(season_rows)
-    season.to_csv(OUT / "same_source_fixed_season_city_year.csv", index=False)
+    season.to_csv(fout("same_source_fixed_season_city_year.csv"), index=False)
     season_year = season.groupby(["mode", "season", "year"], as_index=False).agg(
         cities=("city_id", "nunique"), **{c: (c, "mean") for c in METHODS + ["A_minus_B_K", "B_minus_C_K", "C_minus_D_paired_K"]})
-    season_year.to_csv(OUT / "same_source_fixed_season_year.csv", index=False)
+    season_year.to_csv(fout("same_source_fixed_season_year.csv"), index=False)
 
     # Gate coverage and available-month trend diagnostics. Available-month
     # trends are explicitly secondary because city/month composition varies.
@@ -114,7 +138,7 @@ def main():
         gate_rows.append({"basis": basis, "mode": mode, "pixel_rule": rule, "min_daily_days": md,
                           "min_8day_periods": mc, "city_years": len(g), "complete_12_month_city_years": n12,
                           "common_months_ge6_city_years": n6})
-    pd.DataFrame(gate_rows).to_csv(OUT / "same_source_gate_coverage.csv", index=False)
+    pd.DataFrame(gate_rows).to_csv(fout("same_source_gate_coverage.csv"), index=False)
 
     # Re-estimate each sensitivity on the exact city-month intersection with
     # the primary rule so changes are not driven by a different calendar mix.
@@ -149,7 +173,7 @@ def main():
                 rec["delta_BC_alt_K"] = rec["B_independent_dates_alt_K"] - rec["C_daily_rebuilt_8day_alt_K"]
                 match_rows.append(rec)
     matched = pd.DataFrame(match_rows)
-    matched.to_csv(OUT / "same_source_matched_sensitivity_city_year.csv", index=False)
+    matched.to_csv(fout("same_source_matched_sensitivity_city_year.csv"), index=False)
     summaries = []
     for (mode, label), g in matched.groupby(["mode", "comparison"]):
         row = {"mode": mode, "comparison": label, "city_years": len(g), "cities": g.city_id.nunique(),
@@ -160,7 +184,7 @@ def main():
                 if name in g:
                     row[f"mean_{name}"] = g[name].mean()
         summaries.append(row)
-    pd.DataFrame(summaries).to_csv(OUT / "same_source_matched_sensitivity_summary.csv", index=False)
+    pd.DataFrame(summaries).to_csv(fout("same_source_matched_sensitivity_summary.csv"), index=False)
 
     # City-cluster bootstrap intervals for the pooled common-month level
     # differences. Each city contributes one time-mean, avoiding treating
@@ -179,7 +203,7 @@ def main():
             boot_rows.append({"mode": mode, "metric": label, "cities": len(vals), "mean_K": vals.mean(),
                               "median_city_mean_K": np.median(vals), "cluster_bootstrap_95_lo_K": np.quantile(draws, .025),
                               "cluster_bootstrap_95_hi_K": np.quantile(draws, .975)})
-    pd.DataFrame(boot_rows).to_csv(OUT / "same_source_cluster_bootstrap.csv", index=False)
+    pd.DataFrame(boot_rows).to_csv(fout("same_source_cluster_bootstrap.csv"), index=False)
 
     # Correlations across city-level means and year-level means use only the
     # common-month panel. They describe rank agreement, not equality.
@@ -208,8 +232,8 @@ def main():
             sm = sen_summary(eligible, metric)
             trend_rows.append({"mode": mode, "metric": metric, "eligible_years": sm.pop("n_years"),
                                **sm, "note": "secondary: >=6 shared estimable months; city and month composition varies"})
-    pd.DataFrame(corr_rows).to_csv(OUT / "same_source_rank_correlations.csv", index=False)
-    pd.DataFrame(trend_rows).to_csv(OUT / "same_source_available_month_trends.csv", index=False)
+    pd.DataFrame(corr_rows).to_csv(fout("same_source_rank_correlations.csv"), index=False)
+    pd.DataFrame(trend_rows).to_csv(fout("same_source_available_month_trends.csv"), index=False)
     print("Wrote aggregation, season, gate, rank-correlation and secondary trend outputs to", OUT)
 
 

@@ -108,6 +108,7 @@
 """
 
 import argparse
+import json
 import re
 import sys
 from itertools import groupby
@@ -126,9 +127,17 @@ parser.add_argument("--mode", choices=("night", "day"), default="night")
 # 容易被误读成「那年没数据」）。要跑子集时显式给。
 parser.add_argument("--years", type=int, nargs="+", default=None,
                     help="默认=盘上已有的全部年份")
+parser.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="terra=MOD11A1（默认，行为不变）；aqua=MYD11A1，输出加 _aqua 后缀")
 ARGS = parser.parse_args()
 MODE = ARGS.mode
 TAG = MODE
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from products import get as get_product  # noqa: E402
+
+PROD = get_product(ARGS.product)
+SUF = PROD["suffix"]
+STEM = PROD["stem_daily"].format(tag=TAG)
 LABEL = "夜间" if MODE == "night" else "白天"
 COL_PAIRED = f"suhii_{MODE}_daily_paired"
 
@@ -142,16 +151,24 @@ BASE = Path(__file__).resolve().parent.parent.parent      # analysis/
 DATA = BASE / "data"
 EXPORT = DATA / "gee_export"
 DAILY = DATA / "daily"
-OUT = DAILY / f"panel_{TAG}_daily.csv"
+OUT = DAILY / f"panel_{TAG}_daily{SUF}.csv"
 DAILY.mkdir(parents=True, exist_ok=True)
+
+# 本平台的导出日期清单（02 写入）：{年: 该年天数}。用作「读的是不是本平台栅格」的语义防线。
+MANIFEST = DAILY / PROD["manifest"].format(tag=TAG)
+MANIFEST_DAYS: dict[int, int] = {}
+if MANIFEST.exists():
+    for _k, _v in json.loads(MANIFEST.read_text(encoding="utf-8")).items():
+        _y = int(_k.split("|")[0])
+        MANIFEST_DAYS[_y] = MANIFEST_DAYS.get(_y, 0) + len(_v)
 
 if ARGS.years is None:
     # 用正则而非 split("_")：`uhi_nightdaily_2001_h1.tif` 用 split 也能取到，
-    # 但只要文件名多一段（如将来的后缀变体）下标就漂了。
-    YEARS = sorted({int(m.group(1)) for p in EXPORT.glob(f"uhi_{TAG}daily_*.tif")
-                    if (m := re.match(rf"uhi_{TAG}daily_(\d{{4}})_", p.name))})
+    # 但只要文件名多一段（如 `mya_daydaily_...` 的前缀变体）下标就漂了。
+    YEARS = sorted({int(m.group(1)) for p in EXPORT.glob(f"{STEM}_*.tif")
+                    if (m := re.match(rf"{STEM}_(\d{{4}})_", p.name))})
     if not YEARS:
-        raise SystemExit(f"盘上没有任何 uhi_{TAG}daily_*.tif —— 先跑 02 导出并 15 下载")
+        raise SystemExit(f"盘上没有任何 {STEM}_*.tif —— 先跑 02 导出并 15 下载")
     print(f"  --years 未指定 → 取盘上已有的 {len(YEARS)} 个年份："
           f"{YEARS[0]}–{YEARS[-1]}")
 else:
@@ -176,7 +193,7 @@ def load_year(year):
     若不过滤，QC 波段会被当成 LST 逐日值读进来——不报错，结果全错。
     收严档的敏感性由独立脚本读 `Q*` 波段，不走这里。
     """
-    files = sorted(EXPORT.glob(f"uhi_{TAG}daily_{year}_*.tif"))
+    files = sorted(EXPORT.glob(f"{STEM}_{year}_*.tif"))
     if not files:
         return None, None
     entries, dates = [], []
@@ -189,6 +206,15 @@ def load_year(year):
     if len(set(dates)) != len(dates):
         dup = sorted({d for d in dates if dates.count(d) > 1})
         raise RuntimeError(f"{year}: 波段日期有重复 {dup} —— 分半段拼接错位/跨半段重叠")
+    # 语义防线（2026-10-11 加）：`load_year` 曾把输入 glob 写死成 `uhi_*`，
+    # 于是 `--product aqua` 静默读到 **Terra** 的栅格，产出一份标着 Aqua 的
+    # 面板（353 天 vs Aqua 实际 349 天，值差 ~1.9 K）。文件名过滤器躲不掉这类错，
+    # 故这里拿**本平台日期清单**（02 导出时写入）逐日对数：数量不等即停。
+    expect = MANIFEST_DAYS.get(year)
+    if expect is not None and expect != len(dates):
+        raise SystemExit(
+            f"{year}: 读到 {len(dates)} 天，但 {MANIFEST.name} 记的是 {expect} 天 —— "
+            f"输入 glob 很可能指向了另一个平台的栅格（现用前缀 {STEM!r}）")
     order = sorted(range(len(dates)), key=lambda i: dates[i])
     return [entries[i] for i in order], [dates[i] for i in order]
 
@@ -222,11 +248,21 @@ for year in YEARS:
         ci_u[masks[f"u{year}|{c}"]] = j
         ci_r[masks[f"r{year}|{c}"]] = j
 
-    # 按文件分组打开：同一文件开一次读完它的全部波段（50 MB 压缩 tif 开 183 次会明显变慢）
+    # 按文件分组打开，**一次读入该文件全部波段**再逐波段取用。
+    #
+    # ⚠ 2026-10-11 性能修复（与 J9-x 对 07/08/09 的修复同一处）：导出是
+    # `interleave=pixel` 的压缩 GeoTIFF，`src.read(单波段)` 要把 256² 瓦片整块解压、
+    # 丢掉 331/332 —— 单波段读取的代价≈整幅文件。逐波段读 362 次 ≈ 362 倍开销，
+    # 这正是 Aqua 全量跑 23 年要 >100 min/模式的原因。改 `src.read()` 一次读全波段后，
+    # 单文件 193 s → 约 2 s。数值路径**完全不变**（同一数组、同一顺序、同一 bincount），
+    # 已用 2003 年逐位回归核验。
+    #
+    # 内存：362 波段 × 885×855 × int16 ≈ 548 MB，与 09 的取舍一致，不跨文件驻留。
     for f, grp in groupby(entries, key=lambda e: e[0]):
         with rasterio.open(f) as src:
+            data = src.read()                      # (bands, H, W) int16，一次解压
             for _, bi in grp:
-                a = src.read(bi).astype(np.float32)
+                a = data[bi - 1].astype(np.float32)   # bi 是 1-based 波段号
                 a[a == FILL] = np.nan
                 a *= SCALE_K
                 flat = a.ravel()
@@ -311,7 +347,11 @@ print(f"\n{'=' * 78}")
 print("【与合成期口径对照（54_method_comparability 同源）】")
 print("=" * 78)
 comp_path = BASE / "outputs" / "method_comparability" / f"equal_period_{TAG}.csv"
-if not comp_path.exists():
+if ARGS.product != "terra":
+    # ⚠ 该对照文件只由 Terra 侧的 54_method_comparability 产出。Aqua 运行若读它，
+    # 会拿 **Aqua 逐日** 对 **Terra 合成** 做减法——不报错，但两边不同平台。
+    print(f"  product={ARGS.product}：跳过「与合成期对照」（该文件仅 Terra 有）")
+elif not comp_path.exists():
     print(f"  缺 {comp_path.relative_to(BASE)}，跳过对照")
 else:
     comp = pd.read_csv(comp_path)
@@ -338,7 +378,7 @@ else:
                          "daily_weighting_effect_K": d_eq - d_pw})
     OUTDIR = BASE / "outputs" / "daily"
     OUTDIR.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(cmp_rows).to_csv(OUTDIR / f"daily_vs_composite_{TAG}.csv",
+    pd.DataFrame(cmp_rows).to_csv(OUTDIR / f"daily_vs_composite_{TAG}{SUF}.csv",
                                   index=False, encoding="utf-8-sig")
     print(f"\n  对照表已写 outputs/daily/daily_vs_composite_{TAG}.csv")
 

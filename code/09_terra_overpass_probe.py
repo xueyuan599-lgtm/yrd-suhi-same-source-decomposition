@@ -85,17 +85,35 @@ PRODUCTS = {
     "MOD11A1": "MODIS/061/MOD11A1",
     "MOD11A2": "MODIS/061/MOD11A2",
 }
+PRODUCTS_AQUA = {
+    "MYD11A1": "MODIS/061/MYD11A1",
+    "MYD11A2": "MODIS/061/MYD11A2",
+}
 BAND_DAY = "Day_view_time"
 BAND_NIGHT = "Night_view_time"
 BAND_ANGLE = ("Day_view_angle", "Day_view_angl")   # A1 与 A2 仅拼写差
-LABEL = {"MOD11A1": "逐日 (Terra)", "MOD11A2": "8 天合成 (Terra)"}
+LABEL = {"MOD11A1": "逐日 (Terra)", "MOD11A2": "8 天合成 (Terra)",
+         "MYD11A1": "逐日 (Aqua)", "MYD11A2": "8 天合成 (Aqua)"}
 
 parser = argparse.ArgumentParser(description="Terra 过境时间漂移可测性探针")
 parser.add_argument("--years", type=int, nargs="+", default=None,
                     help="默认 2001–2025 全部")
+parser.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="aqua=MYD11A1/MYD11A2（2026-10-11 加）；Aqua 漂移大于 Terra，"
+                         "复现时必须同样量化，否则无法排除过载漂移这个替代解释")
 ARGS = parser.parse_args()
-YEARS = ARGS.years if ARGS.years else list(range(2001, 2026))
-FOCUS = [2001, 2005, 2010, 2015, 2020, 2025]        # 正文/报告重点披露的年份
+if ARGS.product == "aqua":
+    PRODUCTS = PRODUCTS_AQUA
+    PLATFORM = "Aqua"
+    YEARS_DEFAULT = list(range(2003, 2026))          # MYD11 实测起始 2002-07-04
+    FOCUS = [2003, 2005, 2010, 2015, 2020, 2025]
+    CSV_NAME, MD_NAME = "aqua_overpass_times.csv", "AQUA_OVERPASS_PROBE.md"
+else:
+    PLATFORM = "Terra"
+    YEARS_DEFAULT = list(range(2001, 2026))
+    FOCUS = [2001, 2005, 2010, 2015, 2020, 2025]
+    CSV_NAME, MD_NAME = "terra_overpass_times.csv", "TERRA_OVERPASS_PROBE.md"
+YEARS = ARGS.years if ARGS.years else YEARS_DEFAULT
 
 
 def city_fc(key):
@@ -194,7 +212,7 @@ for tag in PRODUCTS:
             "mean_n_days_per_px": nobs,
         })
 df = pd.DataFrame(rows)
-df.to_csv(OUT / "terra_overpass_times.csv", index=False, encoding="utf-8-sig")
+df.to_csv(OUT / CSV_NAME, index=False, encoding="utf-8-sig")
 
 
 def trend_of(series: pd.Series):
@@ -272,24 +290,26 @@ for (tag, key), t in TREND.items():
     if t and t["hamed_rao_p"] < 0.05 and abs(t["sen_slope_min_per_decade"]) > 0:
         measurable.append((tag, key, t))
 
-verdict = ("**TESTABLE** —— 谱系内 MOD11A1 与 MOD11A2 均带逐观测过境时间档，"
-           "且 2001–2025 区域均值呈可测漂移（见下表数值）。"
+_ids = " 与 ".join(PRODUCTS)
+_span = f"{YEARS[0]}–{YEARS[-1]}"
+verdict = (f"**TESTABLE** —— 谱系内 {_ids} 均带逐观测过境时间档，"
+           f"且 {_span} 区域均值呈可测漂移（见下表数值）。"
            if measurable else
-           "**NOT TESTABLE 的强主张不成立** —— 字段存在，但 2001–2025 区域均值"
-           "未检出达到 5% 阈值的单调漂移（见下表数值）。")
+           f"**NOT TESTABLE 的强主张不成立** —— 字段存在，但 {_span} 区域均值"
+           f"未检出达到 5% 阈值的单调漂移（见下表数值）。")
 
 lines = []
-lines.append("# Terra 过境时间漂移：可测性探针（2026-10-03）")
+lines.append(f"# {PLATFORM} 过境时间漂移：可测性探针（2026-10-03）")
 lines.append("")
 lines.append(f"**判定：{verdict}**")
 lines.append("")
 lines.append("> 本文件由 `analysis/code/daily/09_terra_overpass_probe.py` 从同一次 "
              "`reduceRegion` 返回生成，未手抄任何数字。数字化产物见 "
-             "`analysis/outputs/daily/terra_overpass_times.csv`。")
+             f"`analysis/outputs/daily/{CSV_NAME}`（本平台 = {PLATFORM}）。")
 lines.append("")
 lines.append("## 1. 字段是否存在的问题（实测，非说明书）")
 lines.append("")
-lines.append("`MODIS/061/MOD11A1` 与 `MODIS/061/MOD11A2` 的 `bandNames()` 实测：")
+lines.append("`" + "` 与 `".join(sorted(set(PRODUCTS.values()))) + "` 的 `bandNames()` 实测：")
 lines.append("")
 for tag in PRODUCTS:
     lines.append(f"- **{tag}**（{LABEL[tag]}）：`{BAND_DAY}`、`{BAND_NIGHT}` "
@@ -322,17 +342,19 @@ for tag in PRODUCTS:
 lines.append("")
 lines.append("## 3. 能说与不能说")
 lines.append("")
-lines.append("**能说**：过境时间档存在且非空，年度区域均值可用于刻画 2001–2025 的漂移量级。")
+lines.append(f"**能说**：过境时间档存在且非空，年度区域均值可用于刻画 {_span} 的漂移量级"
+             f"（本平台 {PLATFORM}）。")
 lines.append("")
 lines.append("**不能说**：")
 lines.append("1. 不得把区域均值过境时间漂移直接读成 LST 趋势偏差——本探针未做漂移与 "
              "SUHII 趋势的关联/订正实验。")
-lines.append("2. MOD11A1（逐日）与 MOD11A2（8 天）的小时数**不可直接比大小**：抽样单位"
+lines.append(f"2. {' 与 '.join(PRODUCTS)}（{'、'.join('逐日' if k.endswith('A1') else '8 天' for k in PRODUCTS)}）"
+             "的小时数**不可直接比大小**：抽样单位"
              "不同（后者是合成期内多日平均观测时间）。")
 lines.append("3. 当地太阳时的漂移不等于轨道降交点时刻漂移（含经度/纬度加权）。")
 lines.append("")
 
-(OUT / "TERRA_OVERPASS_PROBE.md").write_text("\n".join(lines), encoding="utf-8")
-print(f"\n已写 {(OUT / 'terra_overpass_times.csv').relative_to(BASE)}")
-print(f"已写 {(OUT / 'TERRA_OVERPASS_PROBE.md').relative_to(BASE)}")
+(OUT / MD_NAME).write_text("\n".join(lines), encoding="utf-8")
+print(f"\n已写 {(OUT / CSV_NAME).relative_to(BASE)}")
+print(f"已写 {(OUT / MD_NAME).relative_to(BASE)}")
 print(f"\n判定：{verdict}")

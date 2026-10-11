@@ -77,9 +77,14 @@
 
 import argparse
 import json
+import re
 import sys
-from itertools import groupby
 from pathlib import Path
+
+# 平台映射的唯一源在 `analysis/code/products.py`（本脚本在 daily/ 下）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from products import get as get_product  # noqa: E402
+from itertools import groupby
 
 import numpy as np
 import pandas as pd
@@ -98,10 +103,18 @@ COLS = ["city_id", "year", "mode", "date", "month",
 parser = argparse.ArgumentParser(description="逐日紧凑中间表 daily_records")
 parser.add_argument("--mode", choices=("night", "day", "both"), default="both")
 parser.add_argument("--years", type=int, nargs="+", default=None,
-                    help="默认=盘上已有的全部年份（按 uhi_{mode}daily_*.tif 探测）")
+                    help="默认=盘上已有的全部年份（按 {prefix}_{mode}daily_*.tif 探测）")
+parser.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="terra=MOD11A1（默认，行为不变）；aqua=MYD11A1，输出加 _aqua 后缀")
 ARGS = parser.parse_args()
 
 MODES = ("night", "day") if ARGS.mode == "both" else (ARGS.mode,)
+PROD = get_product(ARGS.product)
+SUF = PROD["suffix"]
+
+
+def daily_stem(mode: str) -> str:
+    return PROD["stem_daily"].format(tag=mode)
 
 BASE = Path(__file__).resolve().parent.parent.parent      # analysis/
 DATA = BASE / "data"
@@ -133,7 +146,7 @@ def plan_year(mode, year):
     日期跨文件重复即报错（分半段拼接错位会静默把两天并成一天）。
     """
     plan, seen = [], set()
-    for f in sorted(EXPORT.glob(f"uhi_{mode}daily_{year}_*.tif")):
+    for f in sorted(EXPORT.glob(f"{daily_stem(mode)}_{year}_*.tif")):
         with rasterio.open(f) as s:
             desc = list(s.descriptions)
             idx = {d: i + 1 for i, d in enumerate(desc) if d}
@@ -227,7 +240,7 @@ def build(mode, years):
 
     df = pd.DataFrame(rows, columns=COLS)
     df = df.sort_values(["city_id", "date"]).reset_index(drop=True)
-    out = DAILY / f"daily_records_{mode}.csv"
+    out = DAILY / f"daily_records_{mode}{SUF}.csv"
     df.to_csv(out, index=False, encoding="utf-8-sig")
     print(f"\n已写 {out.relative_to(BASE)}  {len(df)} 行 · "
           f"{df.city_id.nunique()} 城 · {int(df.year.min())}–{int(df.year.max())}")
@@ -236,8 +249,8 @@ def build(mode, years):
 
 def reproduce(mode):
     """从中间表重建 `panel_{mode}_daily.csv` 的两列并逐城–年比对最大绝对差。"""
-    rec = pd.read_csv(DAILY / f"daily_records_{mode}.csv")
-    pan = pd.read_csv(DAILY / f"panel_{mode}_daily.csv")
+    rec = pd.read_csv(DAILY / f"daily_records_{mode}{SUF}.csv")
+    pan = pd.read_csv(DAILY / f"panel_{mode}_daily{SUF}.csv")
     dif_pw, dif_eq, missing = [], [], 0
     for r in pan.itertuples():
         sub = rec[(rec.city_id == r.city_id) & (rec.year == r.year)]
@@ -268,9 +281,10 @@ print("构建")
 print("=" * 84)
 for mode in MODES:
     if ARGS.years is None:
-        years = sorted({int(p.name.split("_")[2]) for p in EXPORT.glob(f"uhi_{mode}daily_*.tif")})
+        years = sorted({int(m.group(1)) for p in EXPORT.glob(f"{daily_stem(mode)}_*.tif")
+                        if (m := re.search(r"_(\d{4})_", p.name))})
         if not years:
-            print(f"盘上无 uhi_{mode}daily_*.tif，跳过", file=sys.stderr)
+            print(f"盘上无 {daily_stem(mode)}_*.tif，跳过", file=sys.stderr)
             continue
     else:
         years = ARGS.years
@@ -288,7 +302,16 @@ for mode in MODES:
     if mode in meta["modes"]:
         meta["modes"][mode]["validation"] = reproduce(mode)
 
-meta_out = DAILY / "daily_records_meta.json"
+# **合并写入**：按 `--mode` 分次跑时（如先 day 后 night），后一次不得冲掉前一次的模式条目
+# ——否则 meta 只反映最后一次运行，读它的人会以为另一个模式没跑过（同 02/16 的合并约定）。
+meta_out = DAILY / f"daily_records_meta{SUF}.json"
+if meta_out.exists():
+    try:
+        prev = json.loads(meta_out.read_text(encoding="utf-8"))
+        merged_modes = {**prev.get("modes", {}), **meta["modes"]}
+        meta["modes"] = merged_modes
+    except Exception:                       # noqa: BLE001 — meta 损坏时以本次为准，不阻塞产出
+        pass
 meta_out.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 print(f"\n已写 {meta_out.relative_to(BASE)}")
 

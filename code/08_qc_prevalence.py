@@ -59,13 +59,21 @@ parser.add_argument("--tag", default=None,
                          "没有它时两者写同一路径：探针结果（如 `qcprobe_night_2020_*` "
                          "那批）会被全量运行静默冲掉，正文与状态记录引用的数字就失去出处。"
                          "默认：给了 `--glob` 时为 `_glob`，否则无后缀。")
+parser.add_argument("--product", choices=("terra", "aqua"), default="terra",
+                    help="terra=MOD11A1（默认，行为不变）；aqua=MYD11A1，读 mya_* 且输出加 _aqua")
 ARGS = parser.parse_args()
 MODE = ARGS.mode
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from products import get as get_product  # noqa: E402
+
+PROD = get_product(ARGS.product)
+SUF = PROD["suffix"]
+STEM = PROD["stem_daily"].format(tag=MODE)
 # 输出后缀。默认全量运行不带后缀；带 `--glob` 的探针运行自动加 `_glob`，
 # 显式 `--tag` 优先（如 `--tag 2020probe`）。**统一补前导下划线**——否则
 # `--tag 2020probe` 会产出 `..._night2020probe.csv`，与 `_glob` 的风格不一致，
 # 也与手工命名（`..._night_2020probe.csv`）撞不上。
-OSUF = ("_" + ARGS.tag.lstrip("_")) if ARGS.tag else ("_glob" if ARGS.glob else "")
+OSUF = (("_" + ARGS.tag.lstrip("_")) if ARGS.tag else ("_glob" if ARGS.glob else "")) + SUF
 
 FILL = -9999
 # 与 03/07/08/16/16b 的第一条逐字相同；改动须全部一起改。
@@ -88,10 +96,14 @@ def find_files():
     """
     if ARGS.glob:
         return sorted(EXPORT.glob(ARGS.glob)), "显式 --glob"
-    pat = f"uhi_{MODE}daily_*.tif"
+    pat = f"{STEM}_*.tif"
     cand = sorted(EXPORT.glob(pat))
     if cand:
         return cand, f"正式导出 {pat}"
+    if SUF:
+        # 探针回退只对 Terra 有意义（qcprobe_* 是 Terra 的探针导出）。Aqua 无 Q 波段
+        # 覆盖时**不得**悄悄回退到 Terra 探针文件——那会把两个平台混成一份。
+        return [], f"（{PROD['label']} 无 {pat}；不回退到 Terra 探针）"
     probe = sorted(EXPORT.glob(f"qcprobe_{MODE}_*.tif"))
     if probe:
         return probe, f"探针文件 qcprobe_{MODE}_*.tif"
